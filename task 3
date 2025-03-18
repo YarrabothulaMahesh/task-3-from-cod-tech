@@ -1,0 +1,61 @@
+import tensorflow as tf
+import numpy as np
+import cv2
+import matplotlib.pyplot as plt
+from tensorflow.keras.applications import VGG19
+from tensorflow.keras.models import Model
+
+def load_image(path, max_dim=512):
+    img = cv2.imread(path)
+    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    img = tf.image.resize(img, (max_dim, max_dim))
+    img = np.expand_dims(img, axis=0)
+    img = img / 255.0  # Normalize
+    return tf.convert_to_tensor(img, dtype=tf.float32)
+
+def get_vgg_model():
+    vgg = VGG19(include_top=False, weights='imagenet')
+    vgg.trainable = False
+    content_layers = ['block5_conv2']
+    style_layers = ['block1_conv1', 'block2_conv1', 'block3_conv1', 'block4_conv1', 'block5_conv1']
+    outputs = [vgg.get_layer(name).output for name in style_layers + content_layers]
+    return Model(inputs=vgg.input, outputs=outputs)
+
+def compute_content_loss(base_content, target):
+    return tf.reduce_mean(tf.square(base_content - target))
+
+def gram_matrix(input_tensor):
+    result = tf.linalg.einsum('bijc,bijd->bcd', input_tensor, input_tensor)
+    num_locations = tf.shape(input_tensor)[1] * tf.shape(input_tensor)[2]
+    return result / tf.cast(num_locations, tf.float32)
+
+def compute_style_loss(base_style, gram_target):
+    gram_style = gram_matrix(base_style)
+    return tf.reduce_mean(tf.square(gram_style - gram_target))
+
+def total_loss(model, content_image, style_image, generated_image, content_weight=1e4, style_weight=1e-2):
+    outputs = model(generated_image)
+    style_outputs, content_output = outputs[:5], outputs[5]
+    content_loss = compute_content_loss(content_output, model(content_image)[5])
+    style_loss = tf.add_n([compute_style_loss(style, gram_matrix(target)) for style, target in zip(style_outputs, model(style_image)[:5])])
+    return content_weight * content_loss + style_weight * style_loss
+
+def train_style_transfer(content_path, style_path, epochs=1000, learning_rate=0.02):
+    content_image = load_image(content_path)
+    style_image = load_image(style_path)
+    generated_image = tf.Variable(content_image, dtype=tf.float32)
+    model = get_vgg_model()
+    optimizer = tf.optimizers.Adam(learning_rate=learning_rate)
+    for i in range(epochs):
+        with tf.GradientTape() as tape:
+            loss = total_loss(model, content_image, style_image, generated_image)
+        grads = tape.gradient(loss, generated_image)
+        optimizer.apply_gradients([(grads, generated_image)])
+        if i % 100 == 0:
+            print(f"Epoch {i}, Loss: {loss.numpy()}")
+    return generated_image
+
+# Example usage:
+# output_image = train_style_transfer('content.jpg', 'style.jpg')
+# plt.imshow(output_image[0])
+# plt.show()
